@@ -1,3 +1,5 @@
+from pathlib import Path
+import numpy as np
 import os
 # import tarfile
 from PIL import Image
@@ -10,14 +12,17 @@ from torchvision import transforms as T
 
 
 # URL = 'ftp://guest:GU.205dldo@ftp.softronics.ch/mvtec_anomaly_detection/mvtec_anomaly_detection.tar.xz'
-CLASS_NAMES = ['bottle', 'cable', 'capsule', 'carpet', 'grid',
-               'hazelnut', 'leather', 'metal_nut', 'pill', 'screw',
-               'tile', 'toothbrush', 'transistor', 'wood', 'zipper']
+# CLASS_NAMES = ['bottle', 'cable', 'capsule', 'carpet', 'grid',
+#                'hazelnut', 'leather', 'metal_nut', 'pill', 'screw',
+#                'tile', 'toothbrush', 'transistor', 'wood', 'zipper']
+
+# CLASS_NAMES = ['piastrelle_mod']
+CLASS_NAMES = ['tappi_mod']
 
 
 class MVTecDataset(Dataset):
     def __init__(self, dataset_path='D:/dataset/mvtec_anomaly_detection', class_name='bottle', is_train=True,
-                 resize=256, cropsize=224):
+                 resize=512, cropsize=512):
         assert class_name in CLASS_NAMES, 'class_name: {}, should be in {}'.format(class_name, CLASS_NAMES)
         self.dataset_path = dataset_path
         self.class_name = class_name
@@ -31,28 +36,37 @@ class MVTecDataset(Dataset):
 
         # load dataset
         self.x, self.y, self.mask = self.load_dataset_folder()
-
         # set transforms
         self.transform_x = T.Compose([T.Resize(resize, Image.ANTIALIAS),
-                                      T.CenterCrop(cropsize),
+                                      T.CenterCrop(resize),
+                                      T.Resize(cropsize),
                                       T.ToTensor(),
                                       T.Normalize(mean=[0.485, 0.456, 0.406],
                                                   std=[0.229, 0.224, 0.225])])
         self.transform_mask = T.Compose([T.Resize(resize, Image.NEAREST),
-                                         T.CenterCrop(cropsize),
+                                         T.CenterCrop(resize),
+                                         T.Resize(cropsize, Image.NEAREST),
                                          T.ToTensor()])
 
     def __getitem__(self, idx):
         x, y, mask = self.x[idx], self.y[idx], self.mask[idx]
-
         x = Image.open(x).convert('RGB')
         x = self.transform_x(x)
 
         if y == 0:
             mask = torch.zeros([1, self.cropsize, self.cropsize])
         else:
-            mask = Image.open(mask)
-            mask = self.transform_mask(mask)
+            print("HCKEC", Path(mask))
+            if Path(mask).exists():
+                mask = Image.open(mask).convert('L')
+                mask = np.array(mask)
+                print("LOAEDDE MASK", mask.shape, mask.min(), mask.max())
+                mask[mask > 100] = 255
+                mask[mask <= 100] = 0
+                mask = Image.fromarray(mask)
+                mask = self.transform_mask(mask)
+            else:
+                mask = torch.zeros([1, self.cropsize, self.cropsize])
 
         return x, y, mask
 
@@ -68,14 +82,14 @@ class MVTecDataset(Dataset):
 
         img_types = sorted(os.listdir(img_dir))
         for img_type in img_types:
-
             # load images
             img_type_dir = os.path.join(img_dir, img_type)
+
             if not os.path.isdir(img_type_dir):
                 continue
             img_fpath_list = sorted([os.path.join(img_type_dir, f)
                                      for f in os.listdir(img_type_dir)
-                                     if f.endswith('.png')])
+                                     if f.endswith('.png') or f.endswith('.BMP')])
             x.extend(img_fpath_list)
 
             # load gt labels

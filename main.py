@@ -1,3 +1,8 @@
+
+from matplotlib import cm
+import torchsummary
+import imageio
+from pathlib import Path
 import random
 from random import sample
 import argparse
@@ -20,7 +25,7 @@ import matplotlib
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torchvision.models import wide_resnet50_2, resnet18
+from torchvision.models import wide_resnet50_2, resnet18, resnet34
 import datasets.mvtec as mvtec
 
 
@@ -33,7 +38,7 @@ def parse_args():
     parser = argparse.ArgumentParser('PaDiM')
     parser.add_argument('--data_path', type=str, default='D:/dataset/mvtec_anomaly_detection')
     parser.add_argument('--save_path', type=str, default='./mvtec_result')
-    parser.add_argument('--arch', type=str, choices=['resnet18', 'wide_resnet50_2'], default='wide_resnet50_2')
+    parser.add_argument('--arch', type=str, choices=['resnet18', 'wide_resnet50_2', 'resnet34', 'resnet50'], default='wide_resnet50_2')
     return parser.parse_args()
 
 
@@ -48,10 +53,17 @@ def main():
         d = 100
     elif args.arch == 'wide_resnet50_2':
         model = wide_resnet50_2(pretrained=True, progress=True)
+        # torchsummary.summary(model, (3, 512, 512), device='cpu')
         t_d = 1792
         d = 550
+    elif args.arch == 'resnet34':
+        model = resnet34(pretrained=True, progress=True)
+        t_d = 256
+        d = 100
+
     model.to(device)
     model.eval()
+
     random.seed(1024)
     torch.manual_seed(1024)
     if use_cuda:
@@ -78,7 +90,6 @@ def main():
     total_pixel_roc_auc = []
 
     for class_name in mvtec.CLASS_NAMES:
-
         train_dataset = mvtec.MVTecDataset(args.data_path, class_name=class_name, is_train=True)
         train_dataloader = DataLoader(train_dataset, batch_size=32, pin_memory=True)
         test_dataset = mvtec.MVTecDataset(args.data_path, class_name=class_name, is_train=False)
@@ -146,7 +157,7 @@ def main():
             outputs = []
         for k, v in test_outputs.items():
             test_outputs[k] = torch.cat(v, 0)
-        
+
         # Embedding concat
         embedding_vectors = test_outputs['layer1']
         for layer_name in ['layer2', 'layer3']:
@@ -154,7 +165,7 @@ def main():
 
         # randomly select d dimension
         embedding_vectors = torch.index_select(embedding_vectors, 1, idx)
-        
+
         # calculate distance matrix
         B, C, H, W = embedding_vectors.size()
         embedding_vectors = embedding_vectors.view(B, C, H * W).numpy()
@@ -171,16 +182,16 @@ def main():
         dist_list = torch.tensor(dist_list)
         score_map = F.interpolate(dist_list.unsqueeze(1), size=x.size(2), mode='bilinear',
                                   align_corners=False).squeeze().numpy()
-        
+
         # apply gaussian smoothing on the score map
         for i in range(score_map.shape[0]):
             score_map[i] = gaussian_filter(score_map[i], sigma=4)
-        
+
         # Normalization
         max_score = score_map.max()
         min_score = score_map.min()
         scores = (score_map - min_score) / (max_score - min_score)
-        
+
         # calculate image-level ROC AUC score
         img_scores = scores.reshape(scores.shape[0], -1).max(axis=1)
         gt_list = np.asarray(gt_list)
@@ -189,7 +200,7 @@ def main():
         total_roc_auc.append(img_roc_auc)
         print('image ROCAUC: %.3f' % (img_roc_auc))
         fig_img_rocauc.plot(fpr, tpr, label='%s img_ROCAUC: %.3f' % (class_name, img_roc_auc))
-        
+
         # get optimal threshold
         gt_mask = np.asarray(gt_mask_list)
         precision, recall, thresholds = precision_recall_curve(gt_mask.flatten(), scores.flatten())
@@ -221,6 +232,28 @@ def main():
     fig.savefig(os.path.join(args.save_path, 'roc_curve.png'), dpi=100)
 
 
+def apply_colormap(img, cmap='magma', normed: bool = False):
+    """ Applies colormap to image [HxWx3] as uint8
+
+    :param img: image [HxWx3] as uint8
+    :type img: np.ndarray
+    :param cmap: matplotlib colormap, defaults to 'magma'
+    :type cmap: str, optional
+    """
+
+    img = img.astype(float) / 255.
+    my_cm = cm.get_cmap('magma')
+    if normed:
+        normed_data = (img - np.min(img)) / (np.max(img) - np.min(img))
+    else:
+        normed_data = img
+    img = my_cm(normed_data)
+    img = (img * 255.).astype(np.uint8)
+    import cv2
+    img = cv2.medianBlur(img, 25)
+    return img
+
+
 def plot_fig(test_img, scores, gts, threshold, save_dir, class_name):
     num = len(scores)
     vmax = scores.max() * 255.
@@ -243,6 +276,21 @@ def plot_fig(test_img, scores, gts, threshold, save_dir, class_name):
         for ax_i in ax_img:
             ax_i.axes.xaxis.set_visible(False)
             ax_i.axes.yaxis.set_visible(False)
+
+        out_img = Path(save_dir) / f'{str(i).zfill(5)}_image.png'
+        out_heat = Path(save_dir) / f'{str(i).zfill(5)}_heatmap.png'
+        out_heatc = Path(save_dir) / f'{str(i).zfill(5)}_heatmapc.png'
+        out_mask = Path(save_dir) / f'{str(i).zfill(5)}_mask.png'
+        out_vis = Path(save_dir) / f'{str(i).zfill(5)}_vis.png'
+
+        heat_mapc = apply_colormap(heat_map)
+
+        [imageio.imwrite(x, y) for x, y in zip(
+            [out_img, out_heat, out_heatc, out_mask, out_vis],
+            [img, heat_map, heat_mapc, mask * 255, vis_img]
+        )]
+
+        print("OUT", img.shape, heat_map.shape, mask.shape)
         ax_img[0].imshow(img)
         ax_img[0].title.set_text('Image')
         ax_img[1].imshow(gt, cmap='gray')
@@ -271,7 +319,7 @@ def plot_fig(test_img, scores, gts, threshold, save_dir, class_name):
         }
         cb.set_label('Anomaly Score', fontdict=font)
 
-        fig_img.savefig(os.path.join(save_dir, class_name + '_{}'.format(i)), dpi=100)
+        # fig_img.savefig(os.path.join(save_dir, class_name + '_{}'.format(i)), dpi=100)
         plt.close()
 
 
@@ -279,7 +327,7 @@ def denormalization(x):
     mean = np.array([0.485, 0.456, 0.406])
     std = np.array([0.229, 0.224, 0.225])
     x = (((x.transpose(1, 2, 0) * std) + mean) * 255.).astype(np.uint8)
-    
+
     return x
 
 
