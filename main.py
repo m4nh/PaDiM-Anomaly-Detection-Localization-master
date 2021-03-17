@@ -90,9 +90,9 @@ def main():
     total_pixel_roc_auc = []
 
     for class_name in mvtec.CLASS_NAMES:
-        train_dataset = mvtec.MVTecDataset(args.data_path, class_name=class_name, is_train=True)
+        train_dataset = mvtec.CustomDataset(args.data_path, class_name=class_name, is_train=True)
         train_dataloader = DataLoader(train_dataset, batch_size=32, pin_memory=True)
-        test_dataset = mvtec.MVTecDataset(args.data_path, class_name=class_name, is_train=False)
+        test_dataset = mvtec.CustomDataset(args.data_path, class_name=class_name, is_train=False)
         test_dataloader = DataLoader(test_dataset, batch_size=32, pin_memory=True)
 
         train_outputs = OrderedDict([('layer1', []), ('layer2', []), ('layer3', [])])
@@ -101,7 +101,7 @@ def main():
         # extract train set features
         train_feature_filepath = os.path.join(args.save_path, 'temp_%s' % args.arch, 'train_%s.pkl' % class_name)
         if not os.path.exists(train_feature_filepath):
-            for (x, _, _) in tqdm(train_dataloader, '| feature extraction | train | %s |' % class_name):
+            for (x, _, _, _) in tqdm(train_dataloader, '| feature extraction | train | %s |' % class_name):
                 # model prediction
                 with torch.no_grad():
                     _ = model(x.to(device))
@@ -141,9 +141,11 @@ def main():
         gt_list = []
         gt_mask_list = []
         test_imgs = []
+        test_filenames = []
 
         # extract test set features
-        for (x, y, mask) in tqdm(test_dataloader, '| feature extraction | test | %s |' % class_name):
+        for (x, y, mask, filenames) in tqdm(test_dataloader, '| feature extraction | test | %s |' % class_name):
+            test_filenames.extend(filenames)
             test_imgs.extend(x.cpu().detach().numpy())
             gt_list.extend(y.cpu().detach().numpy())
             gt_mask_list.extend(mask.cpu().detach().numpy())
@@ -218,7 +220,7 @@ def main():
         fig_pixel_rocauc.plot(fpr, tpr, label='%s ROCAUC: %.3f' % (class_name, per_pixel_rocauc))
         save_dir = args.save_path + '/' + f'pictures_{args.arch}'
         os.makedirs(save_dir, exist_ok=True)
-        plot_fig(test_imgs, scores, gt_mask_list, threshold, save_dir, class_name)
+        plot_fig(test_imgs, scores, gt_mask_list, threshold, save_dir, class_name, filenames=test_filenames)
 
     print('Average ROCAUC: %.3f' % np.mean(total_roc_auc))
     fig_img_rocauc.title.set_text('Average image ROCAUC: %.3f' % np.mean(total_roc_auc))
@@ -254,12 +256,13 @@ def apply_colormap(img, cmap='magma', normed: bool = False):
     return img
 
 
-def plot_fig(test_img, scores, gts, threshold, save_dir, class_name):
+def plot_fig(test_img, scores, gts, threshold, save_dir, class_name, filenames=None):
     num = len(scores)
     vmax = scores.max() * 255.
     vmin = scores.min() * 255.
     for i in range(num):
         img = test_img[i]
+
         img = denormalization(img)
         gt = gts[i].transpose(1, 2, 0).squeeze()
         heat_map = scores[i] * 255
@@ -277,18 +280,44 @@ def plot_fig(test_img, scores, gts, threshold, save_dir, class_name):
             ax_i.axes.xaxis.set_visible(False)
             ax_i.axes.yaxis.set_visible(False)
 
-        out_img = Path(save_dir) / f'{str(i).zfill(5)}_image.png'
-        out_heat = Path(save_dir) / f'{str(i).zfill(5)}_heatmap.png'
-        out_heatc = Path(save_dir) / f'{str(i).zfill(5)}_heatmapc.png'
-        out_mask = Path(save_dir) / f'{str(i).zfill(5)}_mask.png'
-        out_vis = Path(save_dir) / f'{str(i).zfill(5)}_vis.png'
+        base_name = f'{str(i).zfill(5)}'
+        if filenames is not None:
+            base_name = filenames[i]
+
+        out_img = Path(save_dir) / f'{base_name}_image.png'
+        out_heat = Path(save_dir) / f'{base_name}_heatmap.png'
+        out_bundle = Path(save_dir) / f'{base_name}_bundle.npy'
+        out_heatc = Path(save_dir) / f'{base_name}_heatmapc.png'
+        out_mask = Path(save_dir) / f'{base_name}_mask.png'
+        out_vis = Path(save_dir) / f'{base_name}_vis.png'
 
         heat_mapc = apply_colormap(heat_map)
 
-        [imageio.imwrite(x, y) for x, y in zip(
-            [out_img, out_heat, out_heatc, out_mask, out_vis],
-            [img, heat_map, heat_mapc, mask * 255, vis_img]
-        )]
+        print("\n\nMEAN", heat_map.mean(), heat_mapc.mean())
+
+        print("Writing image")
+        imageio.imwrite(out_img, img)
+        print("Writing heat")
+        imageio.imwrite(out_heat, (heat_map).astype(np.uint8))
+        print("Writing heatc")
+        imageio.imwrite(out_heatc, heat_mapc)
+        print("Writing mask")
+        imageio.imwrite(out_mask, mask * 255)
+        print("Writing detection")
+        imageio.imwrite(out_vis, vis_img)
+
+        bundle = {
+            'filename': base_name,
+            'anomaly_map': heat_map,
+            'anomaly_score_mean': heat_map.mean(),
+            'anomaly_score_max': heat_map.max()
+        }
+        np.save(out_bundle, bundle)
+
+        # [imageio.imwrite(x, y) for x, y in zip(
+        #     [out_img, out_heat, out_heatc, out_mask, out_vis],
+        #     [img, heat_map, heat_mapc, mask * 255, vis_img]
+        # )]
 
         print("OUT", img.shape, heat_map.shape, mask.shape)
         ax_img[0].imshow(img)

@@ -17,12 +17,13 @@ from torchvision import transforms as T
 #                'tile', 'toothbrush', 'transistor', 'wood', 'zipper']
 
 # CLASS_NAMES = ['piastrelle_mod']
-CLASS_NAMES = ['tappi_mod']
+CLASS_NAMES = ['sommaplast_cropped']
+INPUT_SIZE = 384
 
 
 class MVTecDataset(Dataset):
     def __init__(self, dataset_path='D:/dataset/mvtec_anomaly_detection', class_name='bottle', is_train=True,
-                 resize=512, cropsize=512):
+                 resize=INPUT_SIZE, cropsize=INPUT_SIZE):
         assert class_name in CLASS_NAMES, 'class_name: {}, should be in {}'.format(class_name, CLASS_NAMES)
         self.dataset_path = dataset_path
         self.class_name = class_name
@@ -56,7 +57,7 @@ class MVTecDataset(Dataset):
         if y == 0:
             mask = torch.zeros([1, self.cropsize, self.cropsize])
         else:
-            print("HCKEC", Path(mask))
+            # print("HCKEC", Path(mask))
             if Path(mask).exists():
                 mask = Image.open(mask).convert('L')
                 mask = np.array(mask)
@@ -89,7 +90,7 @@ class MVTecDataset(Dataset):
                 continue
             img_fpath_list = sorted([os.path.join(img_type_dir, f)
                                      for f in os.listdir(img_type_dir)
-                                     if f.endswith('.png') or f.endswith('.BMP')])
+                                     if f.endswith('.png') or f.endswith('.BMP') or f.endswith('.bmp')])
             x.extend(img_fpath_list)
 
             # load gt labels
@@ -107,6 +108,97 @@ class MVTecDataset(Dataset):
         assert len(x) == len(y), 'number of x and y should be same'
 
         return list(x), list(y), list(mask)
+
+
+class CustomDataset(Dataset):
+    def __init__(self, dataset_path='D:/dataset/mvtec_anomaly_detection', class_name='bottle', is_train=True,
+                 resize=INPUT_SIZE, cropsize=INPUT_SIZE):
+        assert class_name in CLASS_NAMES, 'class_name: {}, should be in {}'.format(class_name, CLASS_NAMES)
+        self.dataset_path = dataset_path
+        self.class_name = class_name
+        self.is_train = is_train
+        self.resize = resize
+        self.cropsize = cropsize
+        # self.mvtec_folder_path = os.path.join(root_path, 'mvtec_anomaly_detection')
+
+        # download dataset if not exist
+        # self.download()
+
+        # load dataset
+        self.x, self.y, self.mask = self.load_dataset_folder()
+        # set transforms
+        self.transform_x = T.Compose([T.Resize(resize, Image.ANTIALIAS),
+                                      T.CenterCrop(resize),
+                                      T.Resize(cropsize),
+                                      T.ToTensor(),
+                                      T.Normalize(mean=[0.485, 0.456, 0.406],
+                                                  std=[0.229, 0.224, 0.225])])
+        self.transform_mask = T.Compose([T.Resize(resize, Image.NEAREST),
+                                         T.CenterCrop(resize),
+                                         T.Resize(cropsize, Image.NEAREST),
+                                         T.ToTensor()])
+
+    def __getitem__(self, idx):
+        x, y, mask = self.x[idx], self.y[idx], self.mask[idx]
+        filename = Path(x)
+        x = Image.open(x).convert('RGB')
+        x = self.transform_x(x)
+
+        if y == 0:
+            mask = torch.zeros([1, self.cropsize, self.cropsize])
+        else:
+            # print("HCKEC", Path(mask))
+            if Path(mask).exists():
+                mask = Image.open(mask).convert('L')
+                mask = np.array(mask)
+                print("LOAEDDE MASK", mask.shape, mask.min(), mask.max())
+                mask[mask > 100] = 255
+                mask[mask <= 100] = 0
+                mask = Image.fromarray(mask)
+                mask = self.transform_mask(mask)
+            else:
+                mask = torch.zeros([1, self.cropsize, self.cropsize])
+
+        return x, y, mask, filename.name
+
+    def __len__(self):
+        return len(self.x)
+
+    def load_dataset_folder(self):
+        phase = 'train' if self.is_train else 'test'
+        x, y, mask = [], [], []
+
+        img_dir = os.path.join(self.dataset_path, self.class_name, phase)
+        gt_dir = os.path.join(self.dataset_path, self.class_name, 'ground_truth')
+
+        img_types = sorted(os.listdir(img_dir))
+        for img_type in img_types:
+            # load images
+            img_type_dir = os.path.join(img_dir, img_type)
+
+            if not os.path.isdir(img_type_dir):
+                continue
+            img_fpath_list = sorted([os.path.join(img_type_dir, f)
+                                     for f in os.listdir(img_type_dir)
+                                     if f.endswith('.png') or f.endswith('.BMP') or f.endswith('.bmp')])
+            x.extend(img_fpath_list)
+
+            # load gt labels
+            if img_type == 'good':
+                y.extend([0] * len(img_fpath_list))
+                mask.extend([None] * len(img_fpath_list))
+            else:
+                y.extend([1] * len(img_fpath_list))
+                gt_type_dir = os.path.join(gt_dir, img_type)
+                img_fname_list = [os.path.splitext(os.path.basename(f))[0] for f in img_fpath_list]
+                gt_fpath_list = [os.path.join(gt_type_dir, img_fname + '_mask.png')
+                                 for img_fname in img_fname_list]
+                mask.extend(gt_fpath_list)
+
+        assert len(x) == len(y), 'number of x and y should be same'
+
+        return list(x), list(y), list(mask)
+
 
 #     def download(self):
 #         """Download dataset if not exist"""
