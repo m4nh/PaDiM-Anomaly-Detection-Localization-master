@@ -17,7 +17,7 @@ from torchvision import transforms as T
 #                'tile', 'toothbrush', 'transistor', 'wood', 'zipper']
 
 # CLASS_NAMES = ['piastrelle_mod']
-CLASS_NAMES = ['sommaplast_cropped']
+CLASS_NAMES = ['sommaplastv2_cropped']
 INPUT_SIZE = 384
 
 
